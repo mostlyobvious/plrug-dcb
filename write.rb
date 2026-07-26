@@ -257,7 +257,7 @@ PgEphemeral.with_server do |server|
           SELECT COALESCE(MAX(e.position), 0) AS pos
           FROM events e
           JOIN tags t ON t.event_id = e.id
-          WHERE t.key = $1 AND t.value = $2
+          WHERE t.key = $1 AND hashtext(t.value) = hashtext($2) AND t.value = $2
         SQL
         after = result[0]["pos"].to_i
         retry if attempts < 100
@@ -311,7 +311,7 @@ PgEphemeral.with_server do |server|
           SELECT COALESCE(MAX(e.position), 0) AS pos
           FROM events e
           JOIN tags t ON t.event_id = e.id
-          WHERE t.key = $1 AND t.value = $2
+          WHERE t.key = $1 AND hashtext(t.value) = hashtext($2) AND t.value = $2
         SQL
         after = result[0]["pos"].to_i
         retry if attempts < 11

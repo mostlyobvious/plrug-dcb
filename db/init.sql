@@ -20,7 +20,12 @@ CREATE TABLE tags (
     UNIQUE (event_id, key, value)
 );
 
-CREATE INDEX ON tags (key, value, event_id);
+-- Hash the value column so adjacent tag values scatter across distinct
+-- btree leaf pages. Under SSI this dramatically reduces SIREAD-vs-INSERT
+-- page collisions among concurrent writers whose tag values cluster
+-- lexicographically (e.g. "bench_<run>_0..9"). Equality queries on tag
+-- value must include the same hashtext(value) predicate to use this index.
+CREATE INDEX ON tags (key, hashtext(value), event_id);
 
 CREATE FUNCTION read_stream (p_stream_name text)
     RETURNS SETOF events
@@ -50,6 +55,7 @@ CREATE FUNCTION read_tags (p_tags jsonb, p_types text[])
             tags t
             JOIN jsonb_each_text(p_tags) AS pairs (k,
                 v) ON t.key = pairs.k
+                AND hashtext(t.value) = hashtext(pairs.v)
                 AND t.value = pairs.v
         GROUP BY
             t.event_id
@@ -128,7 +134,7 @@ BEGIN
                 FROM
                     tags t
                     JOIN jsonb_each_text(COALESCE(c -> 'tags', '{}'::jsonb)) AS req (k, v)
-                        ON t.key = req.k AND t.value = req.v
+                        ON t.key = req.k AND hashtext(t.value) = hashtext(req.v) AND t.value = req.v
                 GROUP BY
                     t.event_id
                 HAVING
@@ -146,32 +152,18 @@ BEGIN
             elem ->> 'type' AS type,
             elem -> 'data' AS data,
             elem -> 'tags' AS tags,
-            uuidv7 (
-) AS id
+            gen_random_uuid () AS id
         FROM
-            jsonb_array_elements(
-                p_events
-) AS arr (
-                elem
-)
-),
+            jsonb_array_elements(p_events) AS arr (elem)
+    ),
     inserted_events AS (
-INSERT INTO events (type, data, id)
-        SELECT
-            type,
-            data,
-            id
-        FROM
-            ordered_input)
+        INSERT INTO events (type, data, id)
+        SELECT type, data, id FROM ordered_input
+    )
     INSERT INTO tags (key, value, event_id)
-    SELECT
-        pair.k,
-        pair.v,
-        oi.id
-    FROM
-        ordered_input oi
-        CROSS JOIN LATERAL jsonb_each_text(COALESCE(oi.tags, '{}'::jsonb)) AS pair (k,
-        v);
+    SELECT pair.k, pair.v, oi.id
+    FROM ordered_input oi
+        CROSS JOIN LATERAL jsonb_each_text(COALESCE(oi.tags, '{}'::jsonb)) AS pair (k, v);
 END;
 $$;
 
@@ -212,7 +204,7 @@ BEGIN
                 FROM
                     tags t
                     JOIN jsonb_each_text(COALESCE(c -> 'tags', '{}'::jsonb)) AS req (k, v)
-                        ON t.key = req.k AND t.value = req.v
+                        ON t.key = req.k AND hashtext(t.value) = hashtext(req.v) AND t.value = req.v
                 GROUP BY
                     t.event_id
                 HAVING
